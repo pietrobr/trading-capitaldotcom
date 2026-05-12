@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Capital.com Trading Bot</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; max-width: 2200px; }
+    h1 { margin-bottom: 4px; }
+    .muted { color: #666; }
+    .ok { color: #0a7c2f; font-weight: 600; }
+    .bad { color: #b3261e; font-weight: 600; }
+    .warn { color: #b06b00; font-weight: 600; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 12px 0; background:#fff; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 14px; }
+    code { background: #f4f4f4; padding: 2px 5px; border-radius: 3px; }
+    button { padding: 6px 12px; cursor: pointer; }
+    pre { background: #f7f7f7; padding: 10px; border-radius: 6px; overflow-x: auto; }
+    .layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
+    @media (min-width: 1100px) {
+      .layout { grid-template-columns: minmax(720px, 900px) minmax(0, 1fr); align-items: start; }
+      .layout > aside { position: sticky; top: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="debug-banner" style="display:none;background:#ffd11a;color:#222;padding:10px 16px;font-weight:bold;text-align:center;border-bottom:3px solid #b06b00;margin:-24px -24px 16px -24px;">
+    ⚠ DEBUG MODE — box candle = 2 min &middot; entry candles = 1 min &middot; window shrunk &middot; faster polling
+  </div>
+  <h1>Capital.com Trading Bot</h1>
+  <p class="muted">Dashboard &middot; <a href="/api/status">/api/status</a> &middot; <a href="/healthz">/healthz</a></p>
+
+  <div class="layout">
+  <main>
+
+  <div class="card">
+    <h3>Status</h3>
+    <p>
+      Server:
+      {% if s.ready %}
+        <span class="ok">ready</span>
+      {% else %}
+        <span class="warn">running but not ready</span>
+      {% endif %}
+    </p>
+
+    <p>Config:
+      {% if s.config %}
+        <span class="ok">loaded</span> &middot;
+        account mode: <code>{{ s.config.account.mode }}</code>
+      {% else %}
+        <span class="bad">{{ s.config_error or "not loaded" }}</span>
+      {% endif %}
+    </p>
+
+    <p>Credentials:
+      {% if s.credentials_ok %}
+        <span class="ok">present</span>
+      {% else %}
+        <span class="bad">{{ s.credentials_error }}</span>
+        <br><span class="muted">Copy <code>.env.example</code> to <code>.env</code> and fill it in, then restart.</span>
+      {% endif %}
+    </p>
+
+    <p>Capital.com session:
+      {% if s.logged_in %}
+        <span class="ok">logged in</span>
+        <button onclick="doLogout()">Logout</button>
+      {% elif s.last_login_error %}
+        <span class="bad">login failed: {{ s.last_login_error }}</span>
+        <button onclick="doLogin()">Login</button>
+      {% else %}
+        <span class="muted">not logged in</span>
+        <button onclick="doLogin()">Login</button>
+      {% endif %}
+    </p>
+    <div style="margin:8px 0;">
+      <div>Next session(s):</div>
+      <div id="next-sessions" style="margin-top:4px;"><em class="muted">-</em></div>
+    </div>
+    <p class="muted">Last update: <span id="last-update">-</span></p>
+    <p>
+      <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;">
+        <input id="debug-toggle" type="checkbox" onchange="toggleDebug()"
+               {% if not s.logged_in %}disabled{% endif %}>
+        <strong>Debug mode</strong>
+        <span class="muted">(2-min box, 1-min entries, faster polling — for testing only)</span>
+      </label>
+    </p>
+  </div>
+
+  {% if s.config %}
+  <div class="card">
+    <h3>Instruments &amp; Sessions</h3>
+    <p><strong>Instruments:</strong>
+      {% for m in s.config.instruments %}<code>{{ m.symbol }}</code> ({{ m.type }}){% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+    <table>
+      <thead><tr><th>Session</th><th>Start (venue)</th><th>Timezone</th><th>Start (your time)</th><th>Days</th></tr></thead>
+      <tbody>
+      {% for sv in session_views %}
+        <tr>
+          <td><code>{{ sv.id }}</code></td>
+          <td>{{ sv.start_local }}</td>
+          <td>{{ sv.timezone }}</td>
+          <td class="local-start" data-utc="{{ sv.start_utc_today or '' }}">-</td>
+          <td>{{ sv.days|join(", ") }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Strategies</h3>
+    {% set PARAM_DOC = {
+      "atr_period": "Numero di candele DAILY usate per calcolare l'ATR (volatilità media). Standard: 14 giorni.",
+      "atr_filter_pct": "Frazione minima dell'ATR daily che il range della prima candela 15m deve raggiungere per validare la box. 0.25 = 25%.",
+      "opening_range_minutes": "Durata della candela 'box' che definisce H/L iniziali della sessione. Default 15 min.",
+      "entry_window_minutes": "Quanti minuti dopo l'apertura la strategia continua a cercare ingressi (poi annulla i pendenti).",
+      "max_trades_per_session": "Numero massimo di trade che la strategia può armare in una sessione.",
+      "risk_per_trade_pct": "Percentuale del capitale rischiata per ogni trade (usata per dimensionare la posizione).",
+      "position_size": "Size fissa in lotti/contratti se non si usa risk-based sizing.",
+      "poll_interval_s": "Ogni quanti secondi il bot interroga il broker per nuove candele chiuse."
+    } %}
+    <table>
+      <thead><tr><th>Name</th><th>Enabled</th><th>Deployments</th><th>Params</th><th>Manual run</th></tr></thead>
+      <tbody>
+      {% for st in s.config.strategies %}
+        <tr>
+          <td><code>{{ st.name }}</code></td>
+          <td>{{ "yes" if st.enabled else "no" }}</td>
+          <td>
+            {% for d in st.deployments %}
+              <code>{{ d.symbol }}</code> &rarr; {{ d.sessions|join(", ") }}<br>
+            {% endfor %}
+          </td>
+          <td style="font-size:12px;">
+            {% for k, v in st.params.items() %}
+              <div style="margin:2px 0;">
+                <code title="{{ PARAM_DOC.get(k, 'Parametro custom della strategia.') }}"
+                      style="cursor:help;border-bottom:1px dotted #999;">{{ k }}={{ v }}</code>
+              </div>
+            {% endfor %}
+          </td>
+          <td>
+            {% for d in st.deployments %}
+              <div style="margin-bottom:6px;">
+                <strong>{{ d.symbol }}</strong>:
+                {% for sess in d.sessions %}
+                  <label style="margin-right:10px;">
+                    <input type="checkbox" class="m-{{ st.name }}"
+                           data-symbol="{{ d.symbol }}" data-session="{{ sess }}" checked>
+                    {{ sess }}
+                  </label>
+                {% endfor %}
+              </div>
+            {% endfor %}
+            <button onclick="manualStart('{{ st.name }}')"
+                    {% if not s.logged_in %}disabled title="Login first"{% endif %}>
+              Start now on selected
+            </button>
+            <button type="button" onclick="toggleAll('{{ st.name }}', true)">All</button>
+            <button type="button" onclick="toggleAll('{{ st.name }}', false)">None</button>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted">Manual runs start immediately and use the same entry-window
+      duration as the strategy params (default 90 min).</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h3>Active manual sessions</h3>
+    <div id="manual-active"><em>none</em></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary><strong>Live status (JSON)</strong></summary>
+      <pre id="status">loading...</pre>
+    </details>
+  </div>
+
+  </main>
+  <aside>
+  <div class="card">
+    <h3 style="display:flex;align-items:center;justify-content:space-between;">
+      <span>Events</span>
+      <button onclick="clearEvents()" style="background:#f7f7f7;border:1px solid #ccc;font-size:12px;">Clear</button>
+    </h3>
+    <p class="muted">Live log of strategy steps, orders and errors. Newest first &middot; auto-refresh every 2s.</p>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12px;">
+      <label for="event-filter">Filter:</label>
+      <select id="event-filter" onchange="applyEventFilter()" style="font-size:12px;">
+        <option value="">all</option>
+        <option value="system">system</option>
+        {% if s.config %}{% for m in s.config.instruments %}<option value="{{ m.symbol }}">{{ m.symbol }}</option>{% endfor %}{% endif %}
+      </select>
+      <button type="button" onclick="resetEventFilter()" style="background:#f7f7f7;border:1px solid #ccc;font-size:12px;">Reset</button>
+      <span id="event-filter-count" class="muted"></span>
+    </div>
+    <div id="events" style="max-height: 480px; overflow-y: auto; border: 1px solid #e3e3e3; border-radius: 4px; padding: 6px 8px; background: #fafafa; font-family: -apple-system, Segoe UI, monospace; font-size: 12.5px;">
+      <em>loading...</em>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Session summaries</h3>
+    <p class="muted">Riepilogo di ogni sessione al termine (window end o stop manuale).</p>
+    <div id="session-summaries"><em>none yet</em></div>
+  </div>
+  </aside>
+  </div>
+
+  <script>
+    function fmtTime(iso) {
+      try { return new Date(iso).toLocaleString(); } catch(e) { return iso; }
+    }
+    let lastEventTs = null;
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+    async function refreshEvents() {
+      const url = lastEventTs ? `/api/events?since=${encodeURIComponent(lastEventTs)}` : "/api/events";
+      const r = await fetch(url);
+      const data = await r.json();
+      const box = document.getElementById("events");
+      if (!lastEventTs) box.innerHTML = "";
+      // Newest first: prepend in reverse order so the latest event is always on top.
+      const fresh = data.events.slice();
+      for (const ev of fresh) {
+        const levelColors = {
+          error:   { bg: "#fdecea", border: "#b3261e", text: "#b3261e" },
+          warn:    { bg: "#fff4e0", border: "#b06b00", text: "#7a4a00" },
+          info:    { bg: "#f6f8fa", border: "#0a3d91", text: "#222"    },
+          success: { bg: "#e6f4ea", border: "#0a7c2f", text: "#0a5a22" },
+        };
+        const c = levelColors[ev.level] || levelColors.info;
+        const ts = fmtTime(ev.ts);
+        // Compact instance: "strategy:SYMBOL:session:date" -> "SYMBOL" (or "system")
+        const parts0 = String(ev.instance || "").split(":");
+        const shortInst = parts0.length >= 2 ? parts0[1] : (ev.instance || "system");
+        const dataKeys = Object.keys(ev.data || {});
+        let dataHtml = "";
+        if (dataKeys.length) {
+          const parts = dataKeys.map(k =>
+            `<span style="color:#666">${escapeHtml(k)}</span>=`
+            + `<span style="color:#0a3d91">${escapeHtml(
+                typeof ev.data[k] === "object"
+                  ? JSON.stringify(ev.data[k]) : ev.data[k]
+              )}</span>`);
+          dataHtml = `<div style="margin-top:3px;margin-left:18px;font-size:11.5px;color:#555;">${parts.join("  &middot;  ")}</div>`;
+        }
+        const div = document.createElement("div");
+        div.dataset.symbol = shortInst;
+        div.style.background = c.bg;
+        div.style.borderLeft = `3px solid ${c.border}`;
+        div.style.color = c.text;
+        div.style.padding = "4px 8px";
+        div.style.margin = "3px 0";
+        div.style.borderRadius = "3px";
+        div.style.fontFamily = "ui-monospace,Menlo,Consolas,monospace";
+        div.style.fontSize = "12.5px";
+        div.style.whiteSpace = "normal";
+        div.style.wordBreak = "break-word";
+        div.title = `${ev.instance}\n${ev.message}` + (dataKeys.length ? `\n${JSON.stringify(ev.data)}` : "");
+        div.innerHTML =
+            `<div><span style="color:#888">${ts}</span>`
+          + ` <span style="font-weight:bold;color:${c.border}">[${escapeHtml(ev.level.toUpperCase())}]</span>`
+          + ` <span style="font-weight:bold;color:#0a3d91">${escapeHtml(shortInst)}</span>`
+          + ` <span>${escapeHtml(ev.message)}</span></div>`
+          + dataHtml;
+        // Newest on top: insert at the beginning of the box.
+        box.insertBefore(div, box.firstChild);
+        lastEventTs = ev.ts;
+      }
+      applyEventFilter();
+    }
+    function applyEventFilter() {
+      const sel = document.getElementById("event-filter");
+      const filter = sel ? sel.value : "";
+      try { localStorage.setItem("eventFilter", filter); } catch (e) {}
+      const box = document.getElementById("events");
+      if (!box) return;
+      let hidden = 0, total = 0;
+      for (const child of box.children) {
+        if (!child.dataset || !child.dataset.symbol) continue;
+        total++;
+        if (filter && child.dataset.symbol !== filter) {
+          child.style.display = "none";
+          hidden++;
+        } else {
+          child.style.display = "";
+        }
+      }
+      const cnt = document.getElementById("event-filter-count");
+      if (cnt) cnt.textContent = filter
+        ? `(${total - hidden}/${total} shown)`
+        : "";
+    }
+    function resetEventFilter() {
+      const sel = document.getElementById("event-filter");
+      if (sel) sel.value = "";
+      try { localStorage.removeItem("eventFilter"); } catch (e) {}
+      applyEventFilter();
+    }
+    function restoreEventFilter() {
+      try {
+        const saved = localStorage.getItem("eventFilter");
+        if (!saved) return;
+        const sel = document.getElementById("event-filter");
+        if (!sel) return;
+        // Only restore if the symbol is still in the dropdown options.
+        for (const opt of sel.options) {
+          if (opt.value === saved) { sel.value = saved; return; }
+        }
+      } catch (e) {}
+    }
+    let nextSessionStartMs = null;
+    let nextSessionItems = [];
+    function fmtCountdown(sec) {
+      sec = Math.max(0, sec);
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      if (h > 0) return `${h}h ${m}m ${s}s`;
+      return `${m} minuti ${s} secondi`;
+    }
+    function updateNextSessionCountdown() {
+      const box = document.getElementById("next-sessions");
+      if (!box) return;
+      if (!nextSessionItems.length || nextSessionStartMs == null) {
+        box.innerHTML = '<em class="muted">-</em>';
+        return;
+      }
+      const sec = Math.max(0, Math.floor((nextSessionStartMs - Date.now()) / 1000));
+      const eta = fmtCountdown(sec);
+      const when = fmtShort(new Date(nextSessionStartMs).toISOString());
+      const rows = nextSessionItems.map(p =>
+          `<div style="padding:2px 0;">`
+        + `<code>${escapeHtml(p.strategy)}</code> · `
+        + `<strong>${escapeHtml(p.symbol)}</strong> · `
+        + `${escapeHtml(p.session)} `
+        + `<span class="muted">— ${escapeHtml(when)} — in</span> `
+        + `<span style="font-weight:600;">${escapeHtml(eta)}</span>`
+        + `</div>`
+      );
+      box.innerHTML = rows.join("");
+    }
+    async function refresh() {
+      const r = await fetch("/api/status");
+      const data = await r.json();
+      document.getElementById("status").textContent = JSON.stringify(data, null, 2);
+      document.getElementById("last-update").textContent =
+        fmtTime(data.server_time_utc) + " (server)";
+      // Find the soonest scheduled session start in the future, then collect
+      // ALL entries that share that exact start instant (multiple instruments/
+      // sessions can open simultaneously, e.g. ny_open + nasdaq_open).
+      const nowMs = Date.now();
+      let nextMs = null;
+      const futures = [];
+      for (const p of (data.plan_today || [])) {
+        if (!p.start_utc) continue;
+        const ts = new Date(p.start_utc).getTime();
+        if (isNaN(ts) || ts <= nowMs) continue;
+        futures.push({ts, p});
+        if (nextMs == null || ts < nextMs) nextMs = ts;
+      }
+      nextSessionStartMs = nextMs;
+      nextSessionItems = nextMs == null
+        ? []
+        : futures.filter(x => x.ts === nextMs).map(x => x.p);
+      updateNextSessionCountdown();
+      renderManualActive(data.manual_active || []);
+      renderSessionSummaries(data.session_summaries || []);
+      const dbg = !!data.debug_mode;
+      document.getElementById("debug-banner").style.display = dbg ? "block" : "none";
+      const tgl = document.getElementById("debug-toggle");
+      if (tgl && document.activeElement !== tgl) tgl.checked = dbg;
+    }
+    async function toggleDebug() {
+      const enabled = document.getElementById("debug-toggle").checked;
+      const r = await fetch("/api/debug-mode", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({enabled}),
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        alert("Cannot change debug mode: " + data.error);
+        document.getElementById("debug-toggle").checked = !enabled;
+        return;
+      }
+      refresh();
+      refreshEvents();
+    }
+    function fmtRemaining(sec) {
+      if (sec <= 0) return "0s";
+      const m = Math.floor(sec / 60), s = sec % 60;
+      return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }
+    function fmtShort(iso) {
+      try {
+        const d = new Date(iso);
+        const dd = String(d.getDate()).padStart(2,"0");
+        const mm = String(d.getMonth()+1).padStart(2,"0");
+        const hh = String(d.getHours()).padStart(2,"0");
+        const mi = String(d.getMinutes()).padStart(2,"0");
+        return `${dd}/${mm} ${hh}:${mi}`;
+      } catch(e) { return iso; }
+    }
+    function renderManualActive(list) {
+      const box = document.getElementById("manual-active");
+      if (!list.length) { box.innerHTML = "<em>none</em>"; return; }
+      let html = '<div style="overflow-x:auto;">'
+               + '<table style="min-width:0;font-size:13px;"><thead><tr>'
+               + '<th>Strategy</th><th>Symbol</th>'
+               + '<th>Session</th><th>Status</th><th>Remaining</th>'
+               + '<th>Started</th><th>Ends</th><th>Actions</th></tr></thead><tbody>';
+      for (const m of list) {
+        const status = m.open
+          ? '<span style="color:#1a7f37;font-weight:bold;">&#9679; OPEN</span>'
+          : '<span style="color:#999;">&#9675; closed</span>';
+        const action = m.open
+          ? `<button onclick="manualStop('${m.instance_id}')" style="background:#fdecea;border:1px solid #b3261e;color:#b3261e;white-space:nowrap;">Close now</button>`
+          : '<span class="muted">-</span>';
+        html += `<tr><td><code>${m.strategy}</code></td>`
+              + `<td>${m.symbol}</td>`
+              + `<td style="white-space:nowrap;">${m.session}</td>`
+              + `<td style="white-space:nowrap;">${status}</td>`
+              + `<td style="white-space:nowrap;">${fmtRemaining(m.remaining_seconds)}</td>`
+              + `<td style="white-space:nowrap;">${fmtShort(m.start_utc)}</td>`
+              + `<td style="white-space:nowrap;">${fmtShort(m.end_utc)}</td>`
+              + `<td>${action}</td></tr>`;
+      }
+      html += "</tbody></table></div>";
+      box.innerHTML = html;
+    }
+    function fmtNum(v, dp) {
+      if (v === null || v === undefined || v === "") return "-";
+      const n = Number(v);
+      if (!isFinite(n)) return "-";
+      return n.toFixed(dp);
+    }
+    function renderSessionSummaries(list) {
+      const box = document.getElementById("session-summaries");
+      if (!box) return;
+      if (!list.length) { box.innerHTML = "<em>none yet</em>"; return; }
+      // Newest first.
+      const items = list.slice().reverse();
+      let html = '<div style="overflow-x:auto;">'
+               + '<table style="font-size:12.5px;"><thead><tr>'
+               + '<th>Symbol</th><th>Session</th><th>Window</th>'
+               + '<th>Box</th><th>H15/L15</th><th>ATR</th>'
+               + '<th>Armed</th><th>Placed</th><th>Cancel</th>'
+               + '<th>Reason</th></tr></thead><tbody>';
+      for (const m of items) {
+        const boxBadge = m.box_valid
+          ? '<span style="color:#0a7c2f;font-weight:bold;">&#10003; valid</span>'
+          : '<span style="color:#b06b00;">&#10007; invalid</span>';
+        const reasonTag = m.reason === "manual_stop"
+          ? '<span style="color:#b06b00;">manual</span>'
+          : '<span class="muted">window end</span>';
+        html += `<tr>`
+              + `<td><strong>${escapeHtml(m.symbol)}</strong></td>`
+              + `<td style="white-space:nowrap;">${escapeHtml(m.session)}</td>`
+              + `<td style="white-space:nowrap;">${fmtShort(m.start_utc)} &rarr; ${fmtShort(m.end_utc)}</td>`
+              + `<td style="white-space:nowrap;">${boxBadge}</td>`
+              + `<td style="white-space:nowrap;">${fmtNum(m.h15, 5)} / ${fmtNum(m.l15, 5)}</td>`
+              + `<td>${fmtNum(m.daily_atr, 5)}</td>`
+              + `<td style="text-align:center;">${m.trades_armed}</td>`
+              + `<td style="text-align:center;">${m.orders_placed}</td>`
+              + `<td style="text-align:center;">${m.pending_cancelled}</td>`
+              + `<td>${reasonTag}</td></tr>`;
+      }
+      html += "</tbody></table></div>";
+      box.innerHTML = html;
+    }
+    async function doLogin() {
+      await fetch("/api/login", { method: "POST" });
+      location.reload();
+    }
+    async function doLogout() {
+      await fetch("/api/logout", { method: "POST" });
+      location.reload();
+    }
+    async function clearEvents() {
+      await fetch("/api/events/clear", { method: "POST" });
+      lastEventTs = null;
+      document.getElementById("events").innerHTML = "<em>cleared</em>";
+      refreshEvents();
+    }
+    async function manualStop(instanceId) {
+      if (!confirm("Close this manual session now?\n\n" + instanceId)) return;
+      const r = await fetch("/api/manual-stop", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({instance_id: instanceId}),
+      });
+      const data = await r.json();
+      if (!data.ok) alert("Stop failed: " + data.error);
+      refresh();
+      refreshEvents();
+    }
+    async function manualStart(strategy) {
+      const boxes = document.querySelectorAll(".m-" + CSS.escape(strategy) + ":checked");
+      const targets = Array.from(boxes).map(b => ({
+        symbol: b.dataset.symbol, session: b.dataset.session,
+      }));
+      if (targets.length === 0) { alert("Select at least one symbol/session"); return; }
+      const errors = [];
+      for (const t of targets) {
+        const r = await fetch("/api/manual-start", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({strategy, symbol: t.symbol, session: t.session}),
+        });
+        const data = await r.json();
+        if (!data.ok) errors.push(`${t.symbol}/${t.session}: ${data.error}`);
+      }
+      if (errors.length) alert("Errors:\n" + errors.join("\n"));
+      refresh();
+      refreshEvents();
+    }
+    function toggleAll(strategy, value) {
+      document.querySelectorAll(".m-" + CSS.escape(strategy)).forEach(b => b.checked = value);
+    }
+    refresh();
+    refreshEvents();
+    restoreEventFilter();
+    setInterval(refresh, 2000);
+    setInterval(refreshEvents, 2000);
+    setInterval(updateNextSessionCountdown, 1000);
+    // Render the per-session start time in the user's local timezone.
+    (function renderLocalStarts() {
+      const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+      document.querySelectorAll(".local-start").forEach(el => {
+        const utc = el.dataset.utc;
+        if (!utc) { el.textContent = "-"; return; }
+        const d = new Date(utc);
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        el.textContent = `${hh}:${mm} (${tzName})`;
+      });
+    })();
+  </script>
+</body>
+</html>

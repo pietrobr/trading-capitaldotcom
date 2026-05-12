@@ -1,0 +1,91 @@
+account:
+  mode: demo            # demo | live (default demo)
+
+# ============================================================================
+# COME SI LEGANO sessions, instruments E deployments
+# ----------------------------------------------------------------------------
+# 1) sessions    -> definiscono SOLO "quando" (orario + giorni + fuso).
+#                   Sono preset riutilizzabili, non sanno cosa tradare.
+# 2) instruments -> definiscono SOLO "cosa" (lo strumento e il suo tipo).
+#                   Non sanno quando essere tradati.
+# 3) deployments -> il COLLANTE: per ciascuna strategia dichiarano
+#                   "questo symbol viene tradato in queste sessions".
+#                   Una riga = una coppia (symbol, [sessions]).
+#
+# Esempio di lettura:
+#   - {symbol: NVDA, sessions: [ny_open, nasdaq_open]}
+#   significa: la strategia gira su NVDA, attivandosi sia all'apertura
+#   ny_open sia a nasdaq_open (definite sotto in `sessions:`).
+#
+# Per aggiungere un nuovo strumento serve:
+#   a) inserirlo in `instruments:` con symbol+type
+#   b) aggiungere una riga in `deployments:` che lo associa a 1+ sessions
+# ============================================================================
+
+# Reusable session presets
+# NOTA: gli orari `start` sono espressi nel fuso orario locale indicato in `timezone`,
+# con gestione automatica dell'ora legale (DST).
+#   - "Europe/London"     -> ora di Londra (BST in estate, GMT in inverno)
+#                            in genere 1h indietro rispetto all'Italia (es. 09:00 LON = 10:00 IT)
+#   - "America/New_York"  -> ora di New York (EDT in estate UTC-4, EST in inverno UTC-5)
+#                            in genere: 09:30 NY = 15:30 IT (estate) / 14:30 IT (inverno)
+sessions:
+  london_open:
+    start: "09:00"
+    timezone: "Europe/London"
+    days: [mon, tue, wed, thu, fri]
+  ny_open:
+    start: "09:30"
+    timezone: "America/New_York"
+    days: [mon, tue, wed, thu, fri]
+  nasdaq_open:
+    start: "09:30"
+    timezone: "America/New_York"
+    days: [mon, tue, wed, thu, fri]
+  #frankfurt_open:
+    #start: "09:00"
+    #timezone: "Europe/Berlin"
+    #days: [mon, tue, wed, thu, fri]
+
+# Strumenti tradabili (catalogo). Il `symbol` deve corrispondere all'epic
+# usato da Capital.com (es. EURUSD, GOLD, NVDA). `type` guida orari di chiusura
+# del mercato e logiche specifiche (es. forex chiude venerdi 17:00 NY).
+instruments:
+  - symbol: EURUSD
+    type: forex
+  - symbol: GBPUSD
+    type: forex
+  - symbol: GOLD
+    type: commodity
+  - symbol: NVDA
+    type: stock
+  #- symbol: GER40
+  #  type: index
+
+# Strategie attive. Ogni strategia ha i suoi `deployments` che legano
+# gli `instruments` (definiti sopra) alle `sessions` (definite sopra).
+# `params` sono i parametri specifici della strategia.
+strategies:
+  - name: quick_flip_scalper
+    enabled: true
+    # Deployments = coppie (symbol, sessions[]).
+    # Ogni riga genera una "istanza" della strategia per ciascuna sessione
+    # elencata. Es: EURUSD avra' 2 istanze (london_open + ny_open).
+    deployments:
+      - symbol: EURUSD
+        sessions: [london_open, ny_open]
+      - symbol: GBPUSD
+        sessions: [london_open]
+      - symbol: GOLD
+        sessions: [london_open]
+      - symbol: NVDA
+        sessions: [nasdaq_open]
+      #- symbol: GER40
+      #  sessions: [frankfurt_open]
+    params:
+      atr_period: 14
+      atr_filter_pct: 0.25
+      opening_range_minutes: 15
+      entry_window_minutes: 90
+      max_trades_per_session: 1
+      risk_per_trade_pct: 1.0
