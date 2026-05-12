@@ -207,7 +207,9 @@
     </div>
   </div>
   <div class="card">
-    <h3>Session summaries</h3>
+    <h3>Session summaries
+      <a href="#" onclick="clearAllSummaries(event)" style="font-size:12px;font-weight:normal;margin-left:8px;color:#b3261e;">Clear all</a>
+    </h3>
     <p class="muted">Riepilogo di ogni sessione al termine (window end o stop manuale).</p>
     <div id="session-summaries"><em>none yet</em></div>
   </div>
@@ -413,6 +415,23 @@
         return `${dd}/${mm} ${hh}:${mi}`;
       } catch(e) { return iso; }
     }
+    function fmtDate(iso) {
+      try {
+        const d = new Date(iso);
+        const dd = String(d.getDate()).padStart(2,"0");
+        const mm = String(d.getMonth()+1).padStart(2,"0");
+        const yy = d.getFullYear();
+        return `${dd}/${mm}/${yy}`;
+      } catch(e) { return iso; }
+    }
+    function fmtTime(iso) {
+      try {
+        const d = new Date(iso);
+        const hh = String(d.getHours()).padStart(2,"0");
+        const mi = String(d.getMinutes()).padStart(2,"0");
+        return `${hh}:${mi}`;
+      } catch(e) { return iso; }
+    }
     function renderManualActive(list) {
       const box = document.getElementById("manual-active");
       if (!list.length) { box.innerHTML = "<em>none</em>"; return; }
@@ -454,10 +473,10 @@
       const items = list.slice().reverse();
       let html = '<div style="overflow-x:auto;">'
                + '<table style="font-size:12.5px;"><thead><tr>'
-               + '<th>Symbol</th><th>Session</th><th>Window</th>'
+               + '<th>Date</th><th>Symbol</th><th>Session</th><th>Window</th>'
                + '<th>Box</th><th>H15/L15</th><th>ATR</th>'
                + '<th>Armed</th><th>Placed</th><th>Cancel</th>'
-               + '<th>Reason</th></tr></thead><tbody>';
+               + '<th>Reason</th><th></th></tr></thead><tbody>';
       for (const m of items) {
         const boxBadge = m.box_valid
           ? '<span style="color:#0a7c2f;font-weight:bold;">&#10003; valid</span>'
@@ -465,20 +484,39 @@
         const reasonTag = m.reason === "manual_stop"
           ? '<span style="color:#b06b00;">manual</span>'
           : '<span class="muted">window end</span>';
+        const idAttr = `${m.instance_id}|${m.end_utc}`;
         html += `<tr>`
+              + `<td style="white-space:nowrap;">${fmtDate(m.start_utc)}</td>`
               + `<td><strong>${escapeHtml(m.symbol)}</strong></td>`
               + `<td style="white-space:nowrap;">${escapeHtml(m.session)}</td>`
-              + `<td style="white-space:nowrap;">${fmtShort(m.start_utc)} &rarr; ${fmtShort(m.end_utc)}</td>`
+              + `<td style="white-space:nowrap;">${fmtTime(m.start_utc)} &rarr; ${fmtTime(m.end_utc)}</td>`
               + `<td style="white-space:nowrap;">${boxBadge}</td>`
               + `<td style="white-space:nowrap;">${fmtNum(m.h15, 5)} / ${fmtNum(m.l15, 5)}</td>`
               + `<td>${fmtNum(m.daily_atr, 5)}</td>`
               + `<td style="text-align:center;">${m.trades_armed}</td>`
               + `<td style="text-align:center;">${m.orders_placed}</td>`
               + `<td style="text-align:center;">${m.pending_cancelled}</td>`
-              + `<td>${reasonTag}</td></tr>`;
+              + `<td>${reasonTag}</td>`
+              + `<td><button title="Delete" onclick="deleteSummary('${escapeHtml(m.instance_id)}', '${escapeHtml(m.end_utc)}')" style="background:transparent;border:none;color:#b3261e;cursor:pointer;font-size:14px;padding:0 4px;">&times;</button></td>`
+              + `</tr>`;
       }
       html += "</tbody></table></div>";
       box.innerHTML = html;
+    }
+    async function deleteSummary(instanceId, endUtc) {
+      if (!confirm("Delete this session summary?")) return;
+      await fetch("/api/session-summaries/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({instance_id: instanceId, end_utc: endUtc}),
+      });
+      refresh();
+    }
+    async function clearAllSummaries(ev) {
+      if (ev) ev.preventDefault();
+      if (!confirm("Delete ALL session summaries?")) return;
+      await fetch("/api/session-summaries/clear", { method: "POST" });
+      refresh();
     }
     async function doLogin() {
       await fetch("/api/login", { method: "POST" });

@@ -7,8 +7,10 @@ Live data feeding (websocket) and full async loop are wired in main.py.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from loguru import logger
 
@@ -66,8 +68,9 @@ class TradingEngine:
         # to prevent duplicate launches inside the same start window.
         self._started_keys: set[str] = set()
         self._scheduler_task: asyncio.Task | None = None
-        # End-of-session summaries, newest last.
-        self.session_summaries: list[dict] = []
+        # End-of-session summaries, newest last. Persisted across restarts.
+        self._summaries_path = Path("logs/session_summaries.jsonl")
+        self.session_summaries: list[dict] = self._load_session_summaries()
         # Debug mode: shrink timeframes to speed up testing.
         # Box = 2 minutes (aggregated from 2 MINUTE candles).
         # Entries = 1-minute candles. Polling cadence is also accelerated.
@@ -534,7 +537,67 @@ class TradingEngine:
         # Cap to last 200 to avoid unbounded growth.
         if len(self.session_summaries) > 200:
             self.session_summaries = self.session_summaries[-200:]
+        self._persist_session_summary(summary)
         return summary
+
+    def _load_session_summaries(self) -> list[dict]:
+        try:
+            self._summaries_path.parent.mkdir(parents=True, exist_ok=True)
+            if not self._summaries_path.exists():
+                return []
+            out: list[dict] = []
+            with self._summaries_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except Exception:
+                        continue
+            if len(out) > 200:
+                out = out[-200:]
+            if out:
+                logger.info("Engine: restored {} session summaries from {}",
+                            len(out), self._summaries_path)
+            return out
+        except Exception as exc:
+            logger.warning("Engine: could not load session summaries: {}", exc)
+            return []
+
+    def _persist_session_summary(self, summary: dict) -> None:
+        try:
+            self._summaries_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._summaries_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(summary, default=str) + "\n")
+        except Exception as exc:
+            logger.warning("Engine: failed to persist session summary: {}", exc)
+
+    def _rewrite_session_summaries_file(self) -> None:
+        try:
+            self._summaries_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._summaries_path.open("w", encoding="utf-8") as fh:
+                for s in self.session_summaries:
+                    fh.write(json.dumps(s, default=str) + "\n")
+        except Exception as exc:
+            logger.warning("Engine: failed to rewrite session summaries: {}", exc)
+
+    def delete_session_summary(self, instance_id: str, end_utc: str) -> bool:
+        before = len(self.session_summaries)
+        self.session_summaries = [
+            s for s in self.session_summaries
+            if not (s.get("instance_id") == instance_id and s.get("end_utc") == end_utc)
+        ]
+        if len(self.session_summaries) == before:
+            return False
+        self._rewrite_session_summaries_file()
+        return True
+
+    def clear_session_summaries(self) -> int:
+        n = len(self.session_summaries)
+        self.session_summaries = []
+        self._rewrite_session_summaries_file()
+        return n
 
     async def _poll_loop(self, sched: _ScheduledInstance) -> None:
         instance_id = sched.instance_id_for_log

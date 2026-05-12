@@ -168,6 +168,24 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         n = EVENTS.clear()
         return {"ok": True, "cleared": n}
 
+    @app.post("/api/session-summaries/delete")
+    async def session_summaries_delete(payload: dict):
+        if state.engine is None:
+            return JSONResponse({"ok": False, "error": "engine not running"}, status_code=400)
+        instance_id = payload.get("instance_id")
+        end_utc = payload.get("end_utc")
+        if not instance_id or not end_utc:
+            return JSONResponse({"ok": False, "error": "instance_id and end_utc required"}, status_code=400)
+        ok = state.engine.delete_session_summary(instance_id, end_utc)
+        return {"ok": ok}
+
+    @app.post("/api/session-summaries/clear")
+    async def session_summaries_clear():
+        if state.engine is None:
+            return JSONResponse({"ok": False, "error": "engine not running"}, status_code=400)
+        n = state.engine.clear_session_summaries()
+        return {"ok": True, "cleared": n}
+
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
         # Pre-compute today's session start in UTC for each session, so the
