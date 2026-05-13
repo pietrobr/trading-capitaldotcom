@@ -1,6 +1,12 @@
 from fastapi.testclient import TestClient
 
-from src.web.server import create_app
+from src.web.server import ACCESS_COOKIE, ACCESS_TOKEN, create_app
+
+
+def _client(app):
+    c = TestClient(app)
+    c.cookies.set(ACCESS_COOKIE, ACCESS_TOKEN)
+    return c
 
 
 def test_server_starts_without_credentials(monkeypatch, tmp_path):
@@ -9,7 +15,7 @@ def test_server_starts_without_credentials(monkeypatch, tmp_path):
         monkeypatch.setenv(k, "")
     # Use the real config.yaml from repo root
     app = create_app("config.yaml")
-    client = TestClient(app)
+    client = _client(app)
 
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -32,7 +38,7 @@ def test_server_starts_without_config(monkeypatch, tmp_path):
         monkeypatch.setenv(k, "")
     missing = tmp_path / "does_not_exist.yaml"
     app = create_app(str(missing))
-    client = TestClient(app)
+    client = _client(app)
 
     r = client.get("/api/status")
     assert r.status_code == 200

@@ -5,14 +5,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
+from urllib.parse import parse_qs, quote
+
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from src.utils.logger import setup_logging
 from src.web.state import AppState, load_state, try_login, try_logout
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+ACCESS_PASSWORD = "Pietro73"
+ACCESS_COOKIE = "tcdc_auth"
+ACCESS_TOKEN = "ok"
+PUBLIC_PATHS = {"/login", "/healthz"}
+
+
+def _is_authed(request: Request) -> bool:
+    return request.cookies.get(ACCESS_COOKIE) == ACCESS_TOKEN
 
 
 def create_app(config_path: str = "config.yaml") -> FastAPI:
@@ -42,6 +53,46 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
 
     app = FastAPI(title="Capital.com Trading Bot", version="0.1.0", lifespan=lifespan)
     app.state.bot = state
+
+    @app.middleware("http")
+    async def auth_gate(request: Request, call_next):
+        path = request.url.path
+        if path in PUBLIC_PATHS or _is_authed(request):
+            return await call_next(request)
+        if path.startswith("/api/"):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return RedirectResponse(url="/login", status_code=303)
+
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_form(request: Request, error: str | None = None):
+        err_html = (
+            f'<p style="color:#c0392b;margin:0 0 12px 0;">{error}</p>' if error else ""
+        )
+        return HTMLResponse(
+            f"""<!doctype html><html><head><meta charset="utf-8"><title>Login</title>
+<style>body{{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f4f6f8;}}
+.card{{background:#fff;padding:24px 28px;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.08);min-width:280px;}}
+h1{{font-size:18px;margin:0 0 16px 0;}}
+input[type=password]{{width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;margin-bottom:12px;}}
+button{{background:#2c7be5;color:#fff;border:0;padding:8px 14px;border-radius:4px;cursor:pointer;width:100%;}}</style>
+</head><body><form class="card" method="post" action="/login">
+<h1>Inserisci password</h1>{err_html}
+<input type="password" name="password" autofocus required />
+<button type="submit">Accedi</button></form></body></html>"""
+        )
+
+    @app.post("/login")
+    async def login_submit(request: Request):
+        body = (await request.body()).decode("utf-8", errors="replace")
+        fields = parse_qs(body)
+        password = (fields.get("password") or [""])[0]
+        if password == ACCESS_PASSWORD:
+            resp = RedirectResponse(url="/", status_code=303)
+            resp.set_cookie(
+                ACCESS_COOKIE, ACCESS_TOKEN, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30
+            )
+            return resp
+        return RedirectResponse(url=f"/login?error={quote('Password errata')}", status_code=303)
 
     @app.get("/healthz")
     async def healthz():
