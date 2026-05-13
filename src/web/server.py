@@ -196,6 +196,28 @@ button{{background:#2c7be5;color:#fff;border:0;padding:8px 14px;border-radius:4p
             return JSONResponse({"ok": False, "error": "instance not found"}, status_code=404)
         return {"ok": True, "instance_id": instance_id}
 
+    @app.post("/api/manual-stop-all")
+    async def manual_stop_all():
+        if state.engine is None:
+            return JSONResponse({"ok": False, "error": "engine not running"}, status_code=400)
+        # Close every currently-open instance shown in the dashboard
+        # (both auto-scheduled and user-triggered).
+        now = datetime.now(timezone.utc)
+        targets = [
+            m.instance_id_for_log
+            for m in (state.engine.manual_instances + state.engine.auto_instances)
+            if not m.closed and m.end_utc > now
+        ]
+        closed: list[str] = []
+        errors: list[dict] = []
+        for iid in targets:
+            try:
+                if await state.engine.close_manual(iid):
+                    closed.append(iid)
+            except Exception as e:
+                errors.append({"instance_id": iid, "error": str(e)})
+        return {"ok": True, "closed": closed, "count": len(closed), "errors": errors}
+
     @app.post("/api/debug-mode")
     async def set_debug_mode(payload: dict):
         if state.engine is None:

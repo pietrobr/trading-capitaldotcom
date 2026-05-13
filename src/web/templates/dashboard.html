@@ -173,7 +173,13 @@
   {% endif %}
 
   <div class="card">
-    <h3>Active manual sessions</h3>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <h3 style="margin:0;">Active manual sessions</h3>
+      <button id="manual-stop-all-btn" onclick="manualStopAll()"
+        style="background:#fdecea;border:1px solid #b3261e;color:#b3261e;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:13px;display:none;">
+        Close all manual sessions
+      </button>
+    </div>
     <div id="manual-active"><em>none</em></div>
   </div>
 
@@ -434,6 +440,9 @@
     }
     function renderManualActive(list) {
       const box = document.getElementById("manual-active");
+      const allBtn = document.getElementById("manual-stop-all-btn");
+      const openCount = list.filter(m => m.open).length;
+      if (allBtn) allBtn.style.display = openCount > 0 ? "" : "none";
       if (!list.length) { box.innerHTML = "<em>none</em>"; return; }
       let html = '<div style="overflow-x:auto;">'
                + '<table style="min-width:0;font-size:13px;"><thead><tr>'
@@ -541,6 +550,18 @@
       });
       const data = await r.json();
       if (!data.ok) alert("Stop failed: " + data.error);
+      refresh();
+      refreshEvents();
+    }
+    async function manualStopAll() {
+      if (!confirm("Close ALL open manual sessions?")) return;
+      const r = await fetch("/api/manual-stop-all", { method: "POST" });
+      const data = await r.json();
+      if (!data.ok) {
+        alert("Stop-all failed: " + (data.error || "unknown"));
+      } else if (data.errors && data.errors.length) {
+        alert("Closed " + data.count + " session(s); " + data.errors.length + " error(s).");
+      }
       refresh();
       refreshEvents();
     }
