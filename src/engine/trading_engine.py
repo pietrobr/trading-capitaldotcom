@@ -310,7 +310,7 @@ class TradingEngine:
             if self.dry_run:
                 EVENTS.info(
                     instance_id, "DRY-RUN: would place order",
-                    side=o.side, type=o.type, size=o.size, level=o.level,
+                    side=o.side, type=o.type, size=o.size, price=o.level,
                     sl=o.stop_loss, tp=o.take_profit, ref=o.client_ref,
                 )
                 continue
@@ -321,7 +321,7 @@ class TradingEngine:
                     sched.deal_ids_by_ref[o.client_ref] = deal_id
                 EVENTS.info(
                     instance_id, "Order placed",
-                    side=o.side, type=o.type, level=o.level, deal_id=deal_id,
+                    side=o.side, type=o.type, price=o.level, deal_id=deal_id,
                 )
             except Exception as e:
                 EVENTS.error(instance_id, "place_order failed",
