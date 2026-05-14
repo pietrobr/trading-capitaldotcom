@@ -474,13 +474,21 @@
       if (!isFinite(n)) return "-";
       return n.toFixed(dp);
     }
+    function shortSession(s) {
+      if (!s) return "";
+      // Strip "manual_" prefix and trailing "_HHMMSS" timestamp suffix.
+      return String(s).replace(/^manual_/, "").replace(/_\d{4,6}$/, "");
+    }
     function renderSessionSummaries(list) {
       const box = document.getElementById("session-summaries");
       if (!box) return;
       if (!list.length) { box.innerHTML = "<em>none yet</em>"; return; }
+      // Preserve horizontal scroll position across re-renders.
+      const prevScroller = box.querySelector(".ss-scroll");
+      const prevScrollLeft = prevScroller ? prevScroller.scrollLeft : 0;
       // Newest first.
       const items = list.slice().reverse();
-      let html = '<div style="overflow-x:auto;">'
+      let html = '<div class="ss-scroll" style="overflow-x:auto;">'
                + '<table style="font-size:12.5px;"><thead><tr>'
                + '<th>Date</th><th>Symbol</th><th>Session</th><th>Window</th>'
                + '<th>Box</th><th>H15/L15</th><th>ATR</th>'
@@ -496,10 +504,11 @@
               ? '<span style="color:#b06b00;">ATR filter</span>'
               : '<span class="muted">window end</span>');
         const idAttr = `${m.instance_id}|${m.end_utc}`;
+        const sessShort = shortSession(m.session);
         html += `<tr>`
               + `<td style="white-space:nowrap;">${fmtDate(m.start_utc)}</td>`
               + `<td><strong>${escapeHtml(m.symbol)}</strong></td>`
-              + `<td style="white-space:nowrap;">${escapeHtml(m.session)}</td>`
+              + `<td style="max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(m.session)}">${escapeHtml(sessShort)}</td>`
               + `<td style="white-space:nowrap;">${fmtTime(m.start_utc)} &rarr; ${fmtTime(m.end_utc)}</td>`
               + `<td style="white-space:nowrap;">${boxBadge}</td>`
               + `<td style="white-space:nowrap;">${fmtNum(m.h15, 5)} / ${fmtNum(m.l15, 5)}</td>`
@@ -513,6 +522,10 @@
       }
       html += "</tbody></table></div>";
       box.innerHTML = html;
+      // Restore previous horizontal scroll position so the user is not
+      // snapped back to the left on each refresh.
+      const newScroller = box.querySelector(".ss-scroll");
+      if (newScroller && prevScrollLeft) newScroller.scrollLeft = prevScrollLeft;
     }
     async function deleteSummary(instanceId, endUtc) {
       if (!confirm("Delete this session summary?")) return;
