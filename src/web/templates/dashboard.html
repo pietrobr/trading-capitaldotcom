@@ -492,7 +492,9 @@
           : '<span style="color:#b06b00;">&#10007; invalid</span>';
         const reasonTag = m.reason === "manual_stop"
           ? '<span style="color:#b06b00;">manual</span>'
-          : '<span class="muted">window end</span>';
+          : (m.reason === "atr_filter_failed"
+              ? '<span style="color:#b06b00;">ATR filter</span>'
+              : '<span class="muted">window end</span>');
         const idAttr = `${m.instance_id}|${m.end_utc}`;
         html += `<tr>`
               + `<td style="white-space:nowrap;">${fmtDate(m.start_utc)}</td>`
