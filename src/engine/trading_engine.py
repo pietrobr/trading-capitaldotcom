@@ -616,6 +616,21 @@ class TradingEngine:
                     sched.closed = True
                     self._build_session_summary(sched, reason="window_end")
                     return
+                inst = sched.instance
+                if (
+                    inst is not None
+                    and getattr(inst, "box_evaluated", False)
+                    and not getattr(inst, "box_valid", False)
+                ):
+                    EVENTS.warn(
+                        instance_id,
+                        "ATR filter failed: closing session early (no entries possible)",
+                    )
+                    refs = inst.on_window_end()
+                    await self._cancel_refs(sched, refs)
+                    sched.closed = True
+                    self._build_session_summary(sched, reason="atr_filter_failed")
+                    return
                 await asyncio.sleep(min(interval, max(1, (sched.end_utc - now).total_seconds())))
                 try:
                     await self._poll_once(sched)
